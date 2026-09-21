@@ -1,0 +1,102 @@
+name: unisphere
+services:
+  pune-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pune_campus
+      POSTGRES_USER: university
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    command: ["postgres", "-c", "wal_level=logical"]
+    ports: ["5433:5432"]
+    volumes: ["./infrastructure/postgres:/docker-entrypoint-initdb.d"]
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U university"], interval: 5s, timeout: 5s, retries: 10}
+  bengaluru-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: bengaluru_campus
+      POSTGRES_USER: university
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    command: ["postgres", "-c", "wal_level=logical"]
+    ports: ["5434:5432"]
+    volumes: ["./infrastructure/postgres:/docker-entrypoint-initdb.d"]
+  mumbai-mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: mumbai_campus
+      MYSQL_USER: university
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-mysql}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-mysqlroot}
+    command: ["--server-id=223344", "--log-bin=mysql-bin", "--binlog-format=ROW", "--binlog-row-image=FULL"]
+    ports: ["3307:3306"]
+    volumes: ["./infrastructure/mysql:/docker-entrypoint-initdb.d"]
+  mongodb:
+    image: mongo:7
+    ports: ["27017:27017"]
+    volumes: ["mongo-data:/data/db"]
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-neo4j-demo-password}
+      NEO4J_PLUGINS: '["apoc"]'
+    ports: ["7474:7474", "7687:7687"]
+    volumes: ["./infrastructure/neo4j:/var/lib/neo4j/import"]
+  kafka:
+    image: confluentinc/cp-kafka:7.7.1
+    environment:
+      KAFKA_KRAFT_MODE: "true"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_NODE_ID: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:29093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    ports: ["9092:9092"]
+  kafka-connect:
+    image: debezium/connect:2.7.3.Final
+    depends_on: [kafka, pune-postgres, mumbai-mysql]
+    ports: ["8083:8083"]
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: unisphere-connect
+      CONFIG_STORAGE_TOPIC: unisphere_connect_configs
+      OFFSET_STORAGE_TOPIC: unisphere_connect_offsets
+      STATUS_STORAGE_TOPIC: unisphere_connect_status
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      PLUGIN_NAME: pgoutput
+  api:
+    build: ./backend
+    depends_on: [pune-postgres, mumbai-mysql, mongodb, neo4j]
+    environment:
+      JWT_SECRET: ${JWT_SECRET:-unisphere-development-secret}
+      MONGO_URI: ${MONGO_URI:-mongodb://mongodb:27017}
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j-demo-password}
+    ports: ["8000:8000"]
+    volumes: ["api-data:/data"]
+  central-projector:
+    build: ./backend
+    command: ["python", "workers/projector.py"]
+    depends_on: [kafka, mongodb, neo4j]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      MONGO_URI: ${MONGO_URI:-mongodb://mongodb:27017}
+      NEO4J_URI: ${NEO4J_URI:-bolt://neo4j:7687}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j-demo-password}
+  web:
+    build: ./frontend
+    depends_on: [api]
+    environment: {VITE_API_URL: http://localhost:8000}
+    ports: ["5173:5173"]
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+    ports: ["3000:3000"]
+    environment: {GF_SECURITY_ADMIN_USER: admin, GF_SECURITY_ADMIN_PASSWORD: admin}
+    volumes: ["./infrastructure/grafana/provisioning:/etc/grafana/provisioning"]
+volumes: {mongo-data: {}, api-data: {}}

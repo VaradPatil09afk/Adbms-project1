@@ -1,0 +1,6 @@
+apiVersion: 1
+datasources:
+  - name: UniSphere API
+    type: yesoreyeram-infinity-datasource
+    access: proxy
+    url: http://api:8000
